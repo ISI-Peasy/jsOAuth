@@ -243,6 +243,121 @@
 
                 xhr.send(query);
             };
+            
+            this.createOauthUrl = function (options) {
+                var method, url, data, headers, success, failure, xhr, i,
+                    headerParams, signatureMethod, signatureString, signature,
+                    query = [], appendQueryString, signatureData = {}, params, withFile, urlString;
+
+                method = options.method || 'GET';
+                url = URI(options.url);
+                data = options.data || {};
+                headers = options.headers || {};
+                success = options.success || function () {};
+                failure = options.failure || function () {};
+
+                // According to the spec
+                withFile = (function(){
+                    var hasFile = false;
+                    for(var name in data) {
+                        // Thanks to the FileAPI any file entry
+                        // has a fileName property
+                        if(data[name] instanceof  File || typeof data[name].fileName != 'undefined') hasFile = true;
+                    }
+
+                    return hasFile;
+                })();
+
+                appendQueryString = options.appendQueryString ? options.appendQueryString : false;
+
+                if (oauth.enablePrivilege) {
+                    netscape.security.PrivilegeManager.enablePrivilege('UniversalBrowserRead UniversalBrowserWrite');
+                }                
+
+                headerParams = {
+                    'oauth_callback': oauth.callbackUrl,
+                    'oauth_consumer_key': oauth.consumerKey,
+                    'oauth_token': oauth.accessTokenKey,
+                    'oauth_signature_method': oauth.signatureMethod,
+                    'oauth_timestamp': getTimestamp(),
+                    'oauth_nonce': getNonce(),
+                    'oauth_verifier': oauth.verifier,
+                    'oauth_version': OAUTH_VERSION_1_0
+                };
+
+                signatureMethod = oauth.signatureMethod;
+
+                // Handle GET params first
+                params = url.query.toObject();
+                for (i in params) {
+                    signatureData[i] = params[i];
+                }
+
+                // According to the OAuth spec
+                // if data is transfered using
+                // multipart the POST data doesn't
+                // have to be signed:
+                // http://www.mail-archive.com/oauth@googlegroups.com/msg01556.html
+                if((!('Content-Type' in headers) || headers['Content-Type'] == 'application/x-www-form-urlencoded') && !withFile) {
+                    for (i in data) {
+                        signatureData[i] = data[i];
+                    }
+                }
+
+                urlString = url.scheme + '://' + url.host + url.path;
+                signatureString = toSignatureBaseString(method, urlString, headerParams, signatureData);
+
+                signature = OAuth.signatureMethod[signatureMethod](oauth.consumerSecret, oauth.accessTokenSecret, signatureString);
+
+                headerParams.oauth_signature = signature;
+
+                if (this.realm)
+                {
+                    headerParams['realm'] = this.realm;
+                }
+
+                if (oauth.proxyUrl) {
+                    url = URI(oauth.proxyUrl + url.path);
+                }
+
+                if(appendQueryString || method == 'GET') {
+                    url.query.setQueryParams(data);
+                    query = null;
+                } else if(!withFile){
+                    if (typeof data == 'string') {
+                        query = data;
+                        if (!('Content-Type' in headers)) {
+                            headers['Content-Type'] = 'text/plain';
+                        }
+                    } else {
+                        for(i in data) {
+                            query.push(OAuth.urlEncode(i) + '=' + OAuth.urlEncode(data[i] + ''));
+                        }
+                        query = query.sort().join('&');
+                        if (!('Content-Type' in headers)) {
+                            headers['Content-Type'] = 'application/x-www-form-urlencoded';
+                        }
+                    }
+
+                } else if(withFile) {
+                    // When using FormData multipart content type
+                    // is used by default and required header
+                    // is set to multipart/form-data etc
+                    query = new FormData();
+                    for(i in data) {
+                        query.append(i, data[i]);
+                    }
+                }
+                
+				var requestHeaders = {};
+				
+                requestHeaders['Authorization'] = ('OAuth ' + toHeaderString(headerParams));
+                for (i in headers) {
+                    requestHeaders[i] = headers[i];
+                }
+
+                return {'url' : url.toString(), 'headers' : requestHeaders};
+			};
 
             return this;
         },
@@ -305,6 +420,31 @@
                     'Content-Type': 'application/json'
                 }
             });
+        },
+        
+		/**
+         * Wrapper for GET OAuth.request
+         *
+         * @param url {string} vaild http(s) url
+         * @param success {function} callback for a successful request
+         * @param failure {function} callback for a failed request
+         */
+        oAuthGetUrl: function (url, success, failure) {
+            return this.createOauthUrl({'url': url, 'success': success, 'failure': failure});
+        },
+
+        /**
+         * Wrapper for POST OAuth.request
+         *
+         * @param url {string} vaild http(s) url
+         * @param data {object} A key value paired object of data
+         *                      example: {'q':'foobar'}
+         *                      for GET this will append a query string
+         * @param success {function} callback for a successful request
+         * @param failure {function} callback for a failed request
+         */
+        oAuthPostUrl: function (url, data, success, failure) {
+            return this.createOauthUrl({'method': 'POST', 'url': url, 'data': data, 'success': success, 'failure': failure});
         },
 
         parseTokenRequest: function (tokenRequest, content_type) {
